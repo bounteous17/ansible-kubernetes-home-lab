@@ -1,0 +1,90 @@
+---
+# Playbook: Gracefully power off k3s cluster
+# Order: Drain and shutdown agents first, then servers
+# Usage: ansible-playbook poweroff.yml -i inventory.yml
+
+- name: Gather node information
+  hosts: k3s_cluster
+  gather_facts: true
+  tasks:
+    - name: Cache node hostname for kubectl operations
+      ansible.builtin.set_fact:
+        k3s_node_name: "{{ ansible_hostname }}"
+        cacheable: true
+
+- name: Drain and power off agent nodes
+  hosts: agent
+  become: true
+  gather_facts: false
+  serial: 1
+  tasks:
+    - name: Drain workloads from agent {{ k3s_node_name }}
+      ansible.builtin.command:
+        cmd: >-
+          k3s kubectl drain {{ k3s_node_name }}
+          --ignore-daemonsets
+          --delete-emptydir-data
+          --force
+          --grace-period=60
+          --timeout=300s
+      delegate_to: "{{ groups['server'][0] }}"
+      register: drain_result
+      changed_when: "'drained' in (drain_result.stdout | default(''))"
+      failed_when: false
+
+    - name: Log drain status
+      ansible.builtin.debug:
+        var: drain_result.stdout_lines
+        verbosity: 1
+
+    - name: Shutdown agent node
+      community.general.shutdown:
+        delay: 5
+        msg: "Ansible: Graceful k3s agent shutdown"
+
+- name: Drain and power off secondary servers
+  hosts: server[1:]
+  become: true
+  gather_facts: false
+  serial: 1
+  tasks:
+    - name: Drain workloads from server {{ k3s_node_name }}
+      ansible.builtin.command:
+        cmd: >-
+          k3s kubectl drain {{ k3s_node_name }}
+          --ignore-daemonsets
+          --delete-emptydir-data
+          --force
+          --grace-period=60
+          --timeout=300s
+      delegate_to: "{{ groups['server'][0] }}"
+      register: drain_result
+      changed_when: "'drained' in (drain_result.stdout | default(''))"
+      failed_when: false
+
+    - name: Log drain status
+      ansible.builtin.debug:
+        var: drain_result.stdout_lines
+        verbosity: 1
+
+    - name: Shutdown secondary server node
+      community.general.shutdown:
+        delay: 5
+        msg: "Ansible: Graceful k3s server shutdown"
+
+- name: Shutdown primary server (last)
+  hosts: server[0]
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Cordon primary server {{ k3s_node_name }}
+      ansible.builtin.command:
+        cmd: k3s kubectl cordon {{ k3s_node_name }}
+      register: cordon_result
+      changed_when: "'cordoned' in (cordon_result.stdout | default(''))"
+      failed_when: false
+
+    - name: Final shutdown of primary server
+      community.general.shutdown:
+        delay: 10
+        msg: "Ansible: Graceful k3s primary server shutdown - cluster offline"

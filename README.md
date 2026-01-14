@@ -47,6 +47,35 @@ k3s_cluster:
 ansible-playbook k3s.orchestration.site -i inventory.yml
 ```
 
+## Cluster Operations
+
+### Graceful Cluster Shutdown
+
+The `poweroff.yml` playbook safely shuts down the entire k3s cluster in the correct order:
+
+```bash
+ansible-playbook poweroff.yml -i inventory.yml
+```
+
+**What it does:**
+
+1. **Gathers node information** - Caches hostnames for kubectl operations
+2. **Drains and shuts down agent nodes** - One at a time, evicting workloads gracefully
+3. **Drains and shuts down secondary servers** - One at a time, maintaining quorum as long as possible
+4. **Shuts down primary server last** - Cordons the node and performs final shutdown
+
+**Options:**
+
+- Add `-v` for verbose output including drain status details
+- The playbook uses `serial: 1` to process nodes sequentially, ensuring safe shutdown order
+
+**Notes:**
+
+- Workloads are given a 60-second grace period to terminate
+- Drain operations timeout after 300 seconds
+- DaemonSets and emptyDir data are handled automatically
+- Requires `become: true` (sudo) for shutdown commands
+
 ## Cluster Architecture
 
 - **Server nodes**: Control plane nodes running k3s server
