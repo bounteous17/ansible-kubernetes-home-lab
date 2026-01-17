@@ -1,0 +1,49 @@
+---
+# Playbook: Install nfs-utils on all cluster nodes
+# Required for Longhorn distributed storage (RWX volumes support)
+# Supports: Arch Linux (server nodes) and Raspbian (agent nodes)
+# Usage: ansible-playbook install-nfs-utils.yml -i inventory.yml
+
+- name: Install nfs-utils on cluster nodes
+  hosts: k3s_cluster
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Install nfs-utils package (Arch Linux)
+      ansible.builtin.pacman:
+        name: nfs-utils
+        state: present
+        update_cache: true
+      when: ansible_os_family == "Archlinux"
+
+    - name: Install nfs-utils package (Debian/Raspbian)
+      ansible.builtin.apt:
+        name: nfs-common
+        state: present
+        update_cache: true
+      when: ansible_os_family == "Debian"
+
+    - name: Enable and start rpcbind service (Arch Linux)
+      ansible.builtin.systemd:
+        name: rpcbind
+        enabled: true
+        state: started
+      when: ansible_os_family == "Archlinux"
+
+    - name: Enable and start rpcbind service (Debian/Raspbian)
+      ansible.builtin.systemd:
+        name: rpcbind
+        enabled: true
+        state: started
+      when: ansible_os_family == "Debian"
+
+    - name: Verify nfs-utils installation
+      ansible.builtin.command:
+        cmd: which mount.nfs4 || which mount.nfs
+      register: nfs_check
+      changed_when: false
+      failed_when: false
+
+    - name: Display installation status
+      ansible.builtin.debug:
+        msg: "nfs-utils installed on {{ ansible_hostname }} ({{ ansible_distribution }}): {{ 'yes' if nfs_check.rc == 0 else 'no' }}"

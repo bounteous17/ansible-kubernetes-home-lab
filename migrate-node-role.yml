@@ -1,0 +1,144 @@
+---
+# Playbook: Migrate node role (server <-> agent)
+# Safely converts a node from server to agent or agent to server
+# Usage: 
+#   ansible-playbook migrate-node-role.yml -i inventory.yml -e "target_node=192.168.11.100" -e "new_role=agent"
+#   ansible-playbook migrate-node-role.yml -i inventory.yml -e "target_node=192.168.11.51" -e "new_role=server"
+
+- name: Gather node information
+  hosts: k3s_cluster
+  gather_facts: true
+  tasks:
+    - name: Cache node hostname for kubectl operations
+      ansible.builtin.set_fact:
+        k3s_node_name: "{{ ansible_hostname }}"
+        cacheable: true
+
+- name: Find target node hostname
+  hosts: localhost
+  gather_facts: false
+  vars:
+    target_ip: "{{ target_node }}"
+  tasks:
+    - name: Get node hostname from IP
+      ansible.builtin.command:
+        cmd: kubectl get nodes -o jsonpath='{.items[?(@.status.addresses[?(@.type=="InternalIP")].address=="{{ target_ip }}")].metadata.name}'
+      register: target_hostname
+      changed_when: false
+      failed_when: false
+
+    - name: Set target hostname fact
+      ansible.builtin.set_fact:
+        target_hostname: "{{ target_hostname.stdout }}"
+
+    - name: Display target node info
+      ansible.builtin.debug:
+        msg: "Target node: {{ target_ip }} -> {{ target_hostname }}"
+
+- name: Drain target node
+  hosts: "{{ groups['server'][0] }}"
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Cordon target node
+      ansible.builtin.command:
+        cmd: k3s kubectl cordon {{ target_hostname }}
+      register: cordon_result
+      changed_when: "'cordoned' in cordon_result.stdout"
+      failed_when: false
+
+    - name: Drain target node
+      ansible.builtin.command:
+        cmd: >-
+          k3s kubectl drain {{ target_hostname }}
+          --ignore-daemonsets
+          --delete-emptydir-data
+          --force
+          --grace-period=60
+          --timeout=300s
+      register: drain_result
+      changed_when: "'drained' in drain_result.stdout"
+
+    - name: Display drain result
+      ansible.builtin.debug:
+        var: drain_result.stdout_lines
+
+- name: Stop and uninstall k3s on target node
+  hosts: "{{ target_node }}"
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Check if k3s server is running
+      ansible.builtin.command:
+        cmd: systemctl is-active k3s
+      register: k3s_server_status
+      failed_when: false
+      changed_when: false
+
+    - name: Check if k3s agent is running
+      ansible.builtin.command:
+        cmd: systemctl is-active k3s-agent
+      register: k3s_agent_status
+      failed_when: false
+      changed_when: false
+
+    - name: Stop k3s server
+      ansible.builtin.systemd:
+        name: k3s
+        state: stopped
+      when: k3s_server_status.rc == 0
+
+    - name: Stop k3s agent
+      ansible.builtin.systemd:
+        name: k3s-agent
+        state: stopped
+      when: k3s_agent_status.rc == 0
+
+    - name: Uninstall k3s server
+      ansible.builtin.command:
+        cmd: /usr/local/bin/k3s-uninstall.sh
+      when: k3s_server_status.rc == 0
+      args:
+        creates: /nonexistent
+
+    - name: Uninstall k3s agent
+      ansible.builtin.command:
+        cmd: /usr/local/bin/k3s-agent-uninstall.sh
+      when: k3s_agent_status.rc == 0
+      args:
+        creates: /nonexistent
+
+    - name: Wait for uninstall to complete
+      ansible.builtin.pause:
+        seconds: 5
+
+- name: Remove node from cluster
+  hosts: "{{ groups['server'][0] }}"
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Delete node from cluster
+      ansible.builtin.command:
+        cmd: k3s kubectl delete node {{ target_hostname }}
+      register: delete_result
+      changed_when: "'deleted' in delete_result.stdout"
+      failed_when: false
+
+    - name: Display delete result
+      ansible.builtin.debug:
+        var: delete_result.stdout_lines
+
+- name: Reinstall with new role
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Display next steps
+      ansible.builtin.debug:
+        msg: |
+          Node {{ target_node }} has been drained and uninstalled.
+          
+          NEXT STEPS:
+          1. Update inventory.yml to move {{ target_node }} to {{ new_role }} section
+          2. Run: ansible-playbook k3s.orchestration.site -i inventory.yml --limit {{ new_role }}
+          3. Verify: kubectl get nodes
+          4. Uncordon: kubectl uncordon {{ target_hostname }}

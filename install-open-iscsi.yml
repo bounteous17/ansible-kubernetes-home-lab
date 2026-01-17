@@ -1,0 +1,40 @@
+---
+# Playbook: Install open-iscsi on all cluster nodes
+# Required for Longhorn distributed storage
+# Supports: Arch Linux (server nodes) and Raspbian (agent nodes)
+# Usage: ansible-playbook install-open-iscsi.yml -i inventory.yml
+
+- name: Install open-iscsi on cluster nodes
+  hosts: k3s_cluster
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Install open-iscsi package (Arch Linux)
+      ansible.builtin.pacman:
+        name: open-iscsi
+        state: present
+        update_cache: true
+      when: ansible_os_family == "Archlinux"
+
+    - name: Install open-iscsi package (Debian/Raspbian)
+      ansible.builtin.apt:
+        name: open-iscsi
+        state: present
+        update_cache: true
+      when: ansible_os_family == "Debian"
+
+    - name: Enable and start iscsid service
+      ansible.builtin.systemd:
+        name: iscsid
+        enabled: true
+        state: started
+
+    - name: Verify iscsid service is running
+      ansible.builtin.systemd:
+        name: iscsid
+        state: started
+      register: iscsid_status
+
+    - name: Display iscsid status
+      ansible.builtin.debug:
+        msg: "iscsid service is {{ 'running' if iscsid_status.status.ActiveState == 'active' else 'not running' }} on {{ ansible_hostname }} ({{ ansible_distribution }})"

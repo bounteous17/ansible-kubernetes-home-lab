@@ -1,0 +1,75 @@
+---
+# Playbook: Load dm_crypt kernel modules for Longhorn encryption support
+# Optional: Only needed if you plan to use encrypted volumes in Longhorn
+# Usage: ansible-playbook load-dm-crypt-modules.yml -i inventory.yml
+
+- name: Load dm_crypt kernel modules on cluster nodes
+  hosts: k3s_cluster
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Load dm_mod kernel module
+      ansible.builtin.command:
+        cmd: modprobe dm_mod
+      register: dm_mod_result
+      changed_when: false
+      failed_when: false
+
+    - name: Load dm_crypt kernel module
+      ansible.builtin.command:
+        cmd: modprobe dm_crypt
+      register: dm_crypt_result
+      changed_when: false
+      failed_when: false
+
+    - name: Verify dm_mod module is loaded
+      ansible.builtin.shell:
+        cmd: lsmod | grep -q "^dm_mod" || echo "not loaded"
+      register: dm_mod_check
+      changed_when: false
+
+    - name: Verify dm_crypt module is loaded
+      ansible.builtin.shell:
+        cmd: lsmod | grep -q "^dm_crypt" || echo "not loaded"
+      register: dm_crypt_check
+      changed_when: false
+
+    - name: Display module status
+      ansible.builtin.debug:
+        msg: "dm_mod: {{ 'loaded' if 'not loaded' not in dm_mod_check.stdout else 'not loaded' }}, dm_crypt: {{ 'loaded' if 'not loaded' not in dm_crypt_check.stdout else 'not loaded' }}"
+
+    - name: Add dm_mod to modules file (Arch Linux)
+      ansible.builtin.lineinfile:
+        path: /etc/modules-load.d/dm-modules.conf
+        line: "dm_mod"
+        create: true
+        mode: '0644'
+      when: ansible_os_family == "Archlinux"
+
+    - name: Add dm_crypt to modules file (Arch Linux)
+      ansible.builtin.lineinfile:
+        path: /etc/modules-load.d/dm-modules.conf
+        line: "dm_crypt"
+        create: true
+        mode: '0644'
+      when: ansible_os_family == "Archlinux"
+
+    - name: Add dm_mod to modules file (Debian/Raspbian)
+      ansible.builtin.lineinfile:
+        path: /etc/modules
+        line: "dm_mod"
+        create: true
+        mode: '0644'
+      when: ansible_os_family == "Debian"
+
+    - name: Add dm_crypt to modules file (Debian/Raspbian)
+      ansible.builtin.lineinfile:
+        path: /etc/modules
+        line: "dm_crypt"
+        create: true
+        mode: '0644'
+      when: ansible_os_family == "Debian"
+
+    - name: Display configuration status
+      ansible.builtin.debug:
+        msg: "Kernel modules configured to load on boot for {{ ansible_hostname }} ({{ ansible_distribution }})"

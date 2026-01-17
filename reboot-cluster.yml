@@ -1,0 +1,244 @@
+---
+# Playbook: Safely reboot all k3s cluster nodes
+# Order: Drain agents first, then servers (one at a time to maintain quorum)
+# After reboot, uncordons nodes to allow workloads to be scheduled
+# Usage: ansible-playbook reboot-cluster.yml -i inventory.yml
+
+- name: Gather node information
+  hosts: k3s_cluster
+  gather_facts: true
+  tasks:
+    - name: Cache node hostname for kubectl operations
+      ansible.builtin.set_fact:
+        k3s_node_name: "{{ ansible_hostname }}"
+        cacheable: true
+
+- name: Drain and reboot agent nodes
+  hosts: agent
+  become: true
+  gather_facts: false
+  serial: 1
+  tasks:
+    - name: Drain workloads from agent {{ k3s_node_name }}
+      ansible.builtin.command:
+        cmd: >-
+          k3s kubectl drain {{ k3s_node_name }}
+          --ignore-daemonsets
+          --delete-emptydir-data
+          --force
+          --grace-period=60
+          --timeout=300s
+      delegate_to: "{{ groups['server'][0] }}"
+      register: drain_result
+      changed_when: "'drained' in (drain_result.stdout | default(''))"
+      failed_when: false
+
+    - name: Log drain status
+      ansible.builtin.debug:
+        var: drain_result.stdout_lines
+        verbosity: 1
+
+    - name: Reboot agent node
+      ansible.builtin.reboot:
+        reboot_timeout: 600
+        pre_reboot_delay: 5
+        post_reboot_delay: 30
+        test_command: uptime
+        msg: "Ansible: Rebooting k3s agent node"
+
+    - name: Wait for node to be ready
+      ansible.builtin.wait_for:
+        host: "{{ inventory_hostname }}"
+        port: 22
+        delay: 10
+        timeout: 300
+
+    - name: Wait for k3s agent service to be running
+      ansible.builtin.wait_for:
+        path: /run/systemd/system/k3s-agent.service
+        timeout: 300
+      failed_when: false
+
+    - name: Uncordon agent node
+      ansible.builtin.command:
+        cmd: k3s kubectl uncordon {{ k3s_node_name }}
+      delegate_to: "{{ groups['server'][0] }}"
+      register: uncordon_result
+      changed_when: "'uncordoned' in uncordon_result.stdout"
+      failed_when: false
+      retries: 5
+      delay: 10
+
+    - name: Display uncordon result
+      ansible.builtin.debug:
+        var: uncordon_result.stdout_lines
+        verbosity: 1
+
+- name: Drain and reboot secondary servers
+  hosts: server[1:]
+  become: true
+  gather_facts: false
+  serial: 1
+  tasks:
+    - name: Drain workloads from server {{ k3s_node_name }}
+      ansible.builtin.command:
+        cmd: >-
+          k3s kubectl drain {{ k3s_node_name }}
+          --ignore-daemonsets
+          --delete-emptydir-data
+          --force
+          --grace-period=60
+          --timeout=300s
+      delegate_to: "{{ groups['server'][0] }}"
+      register: drain_result
+      changed_when: "'drained' in (drain_result.stdout | default(''))"
+      failed_when: false
+
+    - name: Log drain status
+      ansible.builtin.debug:
+        var: drain_result.stdout_lines
+        verbosity: 1
+
+    - name: Reboot secondary server node
+      ansible.builtin.reboot:
+        reboot_timeout: 600
+        pre_reboot_delay: 5
+        post_reboot_delay: 30
+        test_command: uptime
+        msg: "Ansible: Rebooting k3s secondary server node"
+
+    - name: Wait for node to be ready
+      ansible.builtin.wait_for:
+        host: "{{ inventory_hostname }}"
+        port: 22
+        delay: 10
+        timeout: 300
+
+    - name: Wait for k3s server service to be running
+      ansible.builtin.wait_for:
+        path: /run/systemd/system/k3s.service
+        timeout: 300
+      failed_when: false
+
+    - name: Wait for k3s API to be ready
+      ansible.builtin.command:
+        cmd: k3s kubectl get nodes
+      delegate_to: "{{ groups['server'][0] }}"
+      register: api_check
+      until: api_check.rc == 0
+      retries: 10
+      delay: 10
+      failed_when: false
+
+    - name: Uncordon secondary server node
+      ansible.builtin.command:
+        cmd: k3s kubectl uncordon {{ k3s_node_name }}
+      delegate_to: "{{ groups['server'][0] }}"
+      register: uncordon_result
+      changed_when: "'uncordoned' in uncordon_result.stdout"
+      failed_when: false
+      retries: 5
+      delay: 10
+
+    - name: Display uncordon result
+      ansible.builtin.debug:
+        var: uncordon_result.stdout_lines
+        verbosity: 1
+
+- name: Drain and reboot primary server (last)
+  hosts: server[0]
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Cordon primary server {{ k3s_node_name }}
+      ansible.builtin.command:
+        cmd: k3s kubectl cordon {{ k3s_node_name }}
+      register: cordon_result
+      changed_when: "'cordoned' in (cordon_result.stdout | default(''))"
+      failed_when: false
+
+    - name: Drain workloads from primary server {{ k3s_node_name }}
+      ansible.builtin.command:
+        cmd: >-
+          k3s kubectl drain {{ k3s_node_name }}
+          --ignore-daemonsets
+          --delete-emptydir-data
+          --force
+          --grace-period=60
+          --timeout=300s
+      register: drain_result
+      changed_when: "'drained' in (drain_result.stdout | default(''))"
+      failed_when: false
+      # Run on the primary server itself (not delegated)
+
+    - name: Log drain status
+      ansible.builtin.debug:
+        var: drain_result.stdout_lines
+        verbosity: 1
+
+    - name: Reboot primary server node
+      ansible.builtin.reboot:
+        reboot_timeout: 600
+        pre_reboot_delay: 10
+        post_reboot_delay: 30
+        test_command: uptime
+        msg: "Ansible: Rebooting k3s primary server node - cluster will be temporarily unavailable"
+
+    - name: Wait for node to be ready
+      ansible.builtin.wait_for:
+        host: "{{ inventory_hostname }}"
+        port: 22
+        delay: 10
+        timeout: 300
+
+    - name: Wait for k3s server service to be running
+      ansible.builtin.wait_for:
+        path: /run/systemd/system/k3s.service
+        timeout: 300
+      failed_when: false
+
+    - name: Wait for k3s API to be ready
+      ansible.builtin.command:
+        cmd: k3s kubectl get nodes
+      register: api_check
+      until: api_check.rc == 0
+      retries: 10
+      delay: 10
+
+    - name: Uncordon primary server node
+      ansible.builtin.command:
+        cmd: k3s kubectl uncordon {{ k3s_node_name }}
+      register: uncordon_result
+      changed_when: "'uncordoned' in uncordon_result.stdout"
+      failed_when: false
+      retries: 5
+      delay: 10
+
+    - name: Display uncordon result
+      ansible.builtin.debug:
+        var: uncordon_result.stdout_lines
+        verbosity: 1
+
+- name: Verify cluster health
+  hosts: server[0]
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Get all nodes status
+      ansible.builtin.command:
+        cmd: k3s kubectl get nodes -o wide
+      register: nodes_status
+
+    - name: Display nodes status
+      ansible.builtin.debug:
+        var: nodes_status.stdout_lines
+
+    - name: Check for NotReady nodes
+      ansible.builtin.command:
+        cmd: k3s kubectl get nodes | grep -v "Ready" || echo "All nodes are Ready"
+      register: ready_check
+      changed_when: false
+
+    - name: Display readiness check
+      ansible.builtin.debug:
+        var: ready_check.stdout_lines

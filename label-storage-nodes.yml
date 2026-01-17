@@ -1,0 +1,36 @@
+---
+# Playbook: Label master nodes for Longhorn storage
+# Labels server nodes so Longhorn only uses them for storage (SSD nodes)
+# Usage: ansible-playbook label-storage-nodes.yml -i inventory.yml
+
+- name: Label server nodes for Longhorn storage
+  hosts: server
+  gather_facts: true
+  become: true
+  tasks:
+    - name: Label node {{ ansible_hostname }} as storage node
+      ansible.builtin.command:
+        cmd: k3s kubectl label node {{ ansible_hostname }} storage-node=true --overwrite
+      delegate_to: "{{ groups['server'][0] }}"
+      register: label_result
+      changed_when: "'labeled' in label_result.stdout or 'already has' in label_result.stderr"
+      failed_when: false
+
+    - name: Display labeling result
+      ansible.builtin.debug:
+        msg: "Node {{ ansible_hostname }} labeled as storage-node: {{ label_result.stdout_lines | default(label_result.stderr_lines) }}"
+
+- name: Verify node labels
+  hosts: server
+  gather_facts: true
+  become: true
+  tasks:
+    - name: Get node labels
+      ansible.builtin.command:
+        cmd: k3s kubectl get node {{ ansible_hostname }} --show-labels
+      delegate_to: "{{ groups['server'][0] }}"
+      register: node_labels
+
+    - name: Display node labels
+      ansible.builtin.debug:
+        msg: "{{ node_labels.stdout }}"
