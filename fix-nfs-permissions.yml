@@ -1,0 +1,66 @@
+---
+# Playbook: Fix NFS export permissions for qBittorrent
+# Sets correct ownership and permissions on /mnt/nas-kingston for qBittorrent (UID 1000)
+# Usage: ansible-playbook fix-nfs-permissions.yml -i inventory.yml --limit 192.168.11.51
+
+- name: Fix NFS export permissions for qBittorrent
+  hosts: "192.168.11.51"
+  become: true
+  gather_facts: true
+  vars:
+    nfs_export_path: /mnt/nas-kingston
+    qbittorrent_uid: 1000
+    qbittorrent_gid: 1000
+  
+  tasks:
+    - name: Check if NFS export path exists
+      ansible.builtin.stat:
+        path: "{{ nfs_export_path }}"
+      register: nfs_path_stat
+
+    - name: Create downloads directory if it doesn't exist
+      ansible.builtin.file:
+        path: "{{ nfs_export_path }}/downloads"
+        state: directory
+        mode: '0775'
+        owner: "{{ qbittorrent_uid }}"
+        group: "{{ qbittorrent_gid }}"
+      when: nfs_path_stat.stat.exists
+
+    - name: Set ownership on NFS export root (make writable by UID 1000)
+      ansible.builtin.file:
+        path: "{{ nfs_export_path }}"
+        state: directory
+        mode: '0777'  # Allow all users to write (NFS will handle permissions)
+        owner: "{{ qbittorrent_uid }}"
+        group: "{{ qbittorrent_gid }}"
+        recurse: false
+      when: nfs_path_stat.stat.exists
+
+    - name: Set ownership on existing subdirectories
+      ansible.builtin.file:
+        path: "{{ nfs_export_path }}/{{ item }}"
+        state: directory
+        mode: '0777'  # Allow all users to write
+        owner: "{{ qbittorrent_uid }}"
+        group: "{{ qbittorrent_gid }}"
+        recurse: true
+      loop:
+        - movies
+        - tv-shows
+        - music
+        - books
+        - photos
+        - downloads
+      when: nfs_path_stat.stat.exists
+      ignore_errors: true
+
+    - name: Display permission status
+      ansible.builtin.command:
+        cmd: ls -la "{{ nfs_export_path }}"
+      register: ls_result
+      changed_when: false
+
+    - name: Show directory permissions
+      ansible.builtin.debug:
+        var: ls_result.stdout_lines

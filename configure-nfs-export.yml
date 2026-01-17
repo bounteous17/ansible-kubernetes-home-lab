@@ -1,0 +1,98 @@
+---
+# Playbook: Configure NFS export on specific node
+# Exports /mnt/nas-kingston from 192.168.11.51 (octopus) to all network addresses
+# Usage: ansible-playbook configure-nfs-export.yml -i inventory.yml --limit 192.168.11.51
+
+- name: Configure NFS export on octopus node
+  hosts: "192.168.11.51"
+  become: true
+  gather_facts: true
+  vars:
+    nfs_export_path: /mnt/nas-kingston
+    nfs_export_options: "*(rw,sync,no_subtree_check,no_root_squash)"
+  
+  tasks:
+    - name: Install NFS server package (Arch Linux)
+      ansible.builtin.pacman:
+        name: nfs-utils
+        state: present
+        update_cache: true
+      when: ansible_os_family == "Archlinux"
+
+    - name: Install NFS server package (Debian/Raspbian)
+      ansible.builtin.apt:
+        name: nfs-kernel-server
+        state: present
+        update_cache: true
+      when: ansible_os_family == "Debian"
+
+    - name: Ensure NFS export directory exists
+      ansible.builtin.file:
+        path: "{{ nfs_export_path }}"
+        state: directory
+        mode: '0755'
+        owner: root
+        group: root
+
+    - name: Check if NFS export already exists in /etc/exports
+      ansible.builtin.lineinfile:
+        path: /etc/exports
+        regexp: "^{{ nfs_export_path | regex_escape() }}"
+        state: absent
+      check_mode: true
+      register: export_check
+      changed_when: false
+
+    - name: Add NFS export to /etc/exports
+      ansible.builtin.lineinfile:
+        path: /etc/exports
+        line: "{{ nfs_export_path }} {{ nfs_export_options }}"
+        state: present
+        backup: true
+      notify: restart nfs services
+
+    - name: Enable and start rpcbind service
+      ansible.builtin.systemd:
+        name: rpcbind
+        enabled: true
+        state: started
+
+    - name: Enable and start nfs-server service (Arch Linux)
+      ansible.builtin.systemd:
+        name: nfs-server
+        enabled: true
+        state: started
+      when: ansible_os_family == "Archlinux"
+      notify: restart nfs services
+
+    - name: Enable and start nfs-kernel-server service (Debian/Raspbian)
+      ansible.builtin.systemd:
+        name: nfs-kernel-server
+        enabled: true
+        state: started
+      when: ansible_os_family == "Debian"
+      notify: restart nfs services
+
+    - name: Flush handlers (to ensure services are restarted)
+      ansible.builtin.meta: flush_handlers
+
+    - name: Reload NFS exports
+      ansible.builtin.command:
+        cmd: exportfs -ra
+      changed_when: true
+
+    - name: Display NFS export status
+      ansible.builtin.command:
+        cmd: exportfs -v
+      register: export_status
+      changed_when: false
+
+    - name: Show NFS export configuration
+      ansible.builtin.debug:
+        msg: "{{ export_status.stdout_lines }}"
+
+  handlers:
+    - name: restart nfs services
+      ansible.builtin.systemd:
+        name: "{{ 'nfs-server' if ansible_os_family == 'Archlinux' else 'nfs-kernel-server' }}"
+        state: restarted

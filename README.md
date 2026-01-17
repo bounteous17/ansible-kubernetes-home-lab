@@ -119,6 +119,47 @@ ansible-playbook load-dm-crypt-modules.yml -i inventory.yml
 
 **Note:** This is optional. If you don't need encrypted volumes, you can ignore the warning in Longhorn UI. The playbook handles the mixed OS environment automatically.
 
+### Configure NFS Export
+
+Configure NFS server on a specific node to export a directory to all network addresses:
+
+```bash
+ansible-playbook configure-nfs-export.yml -i inventory.yml --limit 192.168.11.51
+```
+
+**What it does:**
+
+1. Installs NFS server packages:
+   - **Arch Linux**: `nfs-utils`
+   - **Raspbian**: `nfs-kernel-server`
+2. Ensures the export directory exists (`/mnt/nas-kingston`)
+3. Configures `/etc/exports` to export the directory to all addresses (`*`)
+4. Enables and starts NFS services (`rpcbind` and `nfs-server`/`nfs-kernel-server`)
+5. Reloads NFS exports
+
+**Default configuration:**
+- **Export path**: `/mnt/nas-kingston`
+- **Export options**: `*(rw,sync,no_subtree_check,no_root_squash)` (read-write, sync, accessible from all IPs)
+
+**Customize:** Edit the `vars` section in the playbook to change the path or export options.
+
+### Fix NFS Permissions for qBittorrent
+
+If qBittorrent cannot write to the NFS share, fix permissions on the octopus node:
+
+```bash
+ansible-playbook fix-nfs-permissions.yml -i inventory.yml --limit 192.168.11.51
+```
+
+**What it does:**
+
+1. Sets ownership of `/mnt/nas-kingston` to UID 1000 / GID 1000 (qBittorrent user)
+2. Creates a `downloads` directory with correct permissions
+3. Fixes permissions on existing subdirectories (movies, tv-shows, music, etc.)
+4. Ensures qBittorrent can write to the NFS share
+
+**Note:** This is required if you see permission errors when qBittorrent tries to download files.
+
 ### Safe Cluster Reboot
 
 The `reboot-cluster.yml` playbook safely reboots all cluster nodes in the correct order:
